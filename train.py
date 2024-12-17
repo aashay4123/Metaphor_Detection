@@ -1,3 +1,638 @@
+
+'''
+import pandas as pd
+
+# Load dataset
+file_path = '/train-1.csv'
+data = pd.read_csv(file_path)
+
+print(data.head(), data.info())
+
+import re
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+import nltk
+
+# Download NLTK data
+nltk.download('punkt')
+nltk.download('stopwords')
+
+# Function to preprocess text
+def preprocess_text(text):
+    text = re.sub(r'\W', ' ', text)  # Remove non-word characters
+    text = re.sub(r'\s+', ' ', text)  # Remove extra spaces
+    text = text.lower()  # Convert to lowercase
+    tokens = word_tokenize(text)  # Tokenize
+    tokens = [word for word in tokens if word not in stopwords.words('english')]  # Remove stopwords
+    return ' '.join(tokens)
+
+# Apply preprocessing
+data['cleaned_text'] = data['text'].apply(preprocess_text)
+
+# Display a sample of the preprocessed data
+print(data[['text', 'cleaned_text']].head())
+
+
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Exploratory Data Analysis (EDA)
+
+# Check class distribution
+label_distribution = data['label'].value_counts(normalize=True) * 100
+
+# Plot the class distribution
+plt.figure(figsize=(6, 4))
+sns.barplot(x=label_distribution.index, y=label_distribution.values, palette="viridis")
+plt.title("Class Distribution of Metaphor Labels")
+plt.xlabel("Label (1: Metaphor, 0: Non-Metaphor)")
+plt.ylabel("Percentage")
+plt.xticks([0, 1], ["Non-Metaphor", "Metaphor"])
+plt.show()
+
+# Text length distribution
+data['text_length'] = data['cleaned_text'].apply(len)
+plt.figure(figsize=(8, 6))
+sns.histplot(data['text_length'], bins=30, kde=True)
+plt.title("Distribution of Text Lengths")
+plt.xlabel("Text Length (characters)")
+plt.ylabel("Frequency")
+plt.show()
+
+
+
+
+
+# ## Highlighting the imbalance for all IDs and lack of enough training data for some IDs
+
+
+print(data.groupby(['metaphorID','label']).count())
+
+
+# get_ipython().system('pip3 install xgboost')
+
+
+# Logictic Regression and XGBoost with TF-IDF for Feature Generation
+
+
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, accuracy_score
+from sklearn.linear_model import LogisticRegression
+from xgboost import XGBClassifier
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+data['label']=data['label'].astype(int)
+y=data['label']
+# Generate TF-IDF embeddings
+tfidf_vectorizer = TfidfVectorizer(max_features=2000)  # Reduce dimensionality
+X_tfidf = tfidf_vectorizer.fit_transform(data['cleaned_text']).toarray()
+
+# Split the data again
+X_train, X_test, y_train, y_test = train_test_split(X_tfidf, y, test_size=0.2, random_state=42, stratify=y)
+
+# Logistic Regression model
+log_reg = LogisticRegression(max_iter=1000)
+log_reg.fit(X_train, y_train)
+y_pred_lr = log_reg.predict(X_test)
+
+# Logistic Regression Results
+print("Logistic Regression Results:")
+print(classification_report(y_test, y_pred_lr))
+print("Accuracy:", accuracy_score(y_test, y_pred_lr))
+
+# XGBoost model
+xgb_model = XGBClassifier(use_label_encoder=False, eval_metric='logloss')
+xgb_model.fit(X_train, y_train)
+y_pred_xgb = xgb_model.predict(X_test)
+
+# XGBoost Results
+print("\nXGBoost Results:")
+print(classification_report(y_test, y_pred_xgb))
+print("Accuracy:", accuracy_score(y_test, y_pred_xgb))
+
+
+# Running same models on Word2Vec feature generation
+
+
+from gensim.models import Word2Vec
+import numpy as np
+
+# Tokenize the cleaned text for Word2Vec
+tokenized_text = [text.split() for text in data['cleaned_text']]
+
+# Train Word2Vec model
+word2vec_model = Word2Vec(sentences=tokenized_text, vector_size=100, window=5, min_count=1, workers=4, seed=42)
+
+# Function to create sentence embeddings by averaging word vectors
+def sentence_to_vector(sentence, model, vector_size):
+    words = sentence.split()
+    word_vectors = [model.wv[word] for word in words if word in model.wv]
+    if not word_vectors:
+        return np.zeros(vector_size)
+    return np.mean(word_vectors, axis=0)
+
+# Generate sentence embeddings for the dataset
+vector_size = 100
+data['sentence_vector'] = data['cleaned_text'].apply(lambda x: sentence_to_vector(x, word2vec_model, vector_size))
+X_word2vec = np.vstack(data['sentence_vector'].values)
+
+# Split the data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(X_word2vec, y, test_size=0.2, random_state=42, stratify=y)
+
+# Logistic Regression model
+log_reg = LogisticRegression(max_iter=1000)
+log_reg.fit(X_train, y_train)
+y_pred_lr = log_reg.predict(X_test)
+
+# Logistic Regression Results
+print("Logistic Regression Results (Word2Vec):")
+print(classification_report(y_test, y_pred_lr))
+print("Accuracy:", accuracy_score(y_test, y_pred_lr))
+
+# XGBoost model
+xgb_model = XGBClassifier(use_label_encoder=False, eval_metric='logloss')
+xgb_model.fit(X_train, y_train)
+y_pred_xgb = xgb_model.predict(X_test)
+
+# XGBoost Results
+print("\nXGBoost Results (Word2Vec):")
+print(classification_report(y_test, y_pred_xgb))
+print("Accuracy:", accuracy_score(y_test, y_pred_xgb))
+
+
+# Running same models on GloVe embeddings for feature generation
+
+
+import os
+glove_extracted_path="/Users/prantarborah/Downloads/glove.6B"
+# Load GloVe embeddings (using the 100-dimensional vector file)
+glove_file_path = os.path.join(glove_extracted_path, "glove.6B.100d.txt")
+glove_embeddings = {}
+with open(glove_file_path, "r", encoding="utf-8") as f:
+    for line in f:
+        parts = line.split()
+        word = parts[0]
+        vector = np.array(parts[1:], dtype=np.float32)
+        glove_embeddings[word] = vector
+
+# Function to create sentence embeddings using GloVe
+def sentence_to_glove_vector(sentence, embeddings, vector_size):
+    words = sentence.split()
+    word_vectors = [embeddings[word] for word in words if word in embeddings]
+    if not word_vectors:
+        return np.zeros(vector_size)
+    return np.mean(word_vectors, axis=0)
+
+# Generate GloVe sentence embeddings for the dataset
+vector_size = 100
+data['sentence_vector_glove'] = data['cleaned_text'].apply(
+    lambda x: sentence_to_glove_vector(x, glove_embeddings, vector_size)
+)
+X_glove = np.vstack(data['sentence_vector_glove'].values)
+
+# Split the data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(X_glove, y, test_size=0.2, random_state=42, stratify=y)
+
+# Logistic Regression model
+log_reg = LogisticRegression(max_iter=1000)
+log_reg.fit(X_train, y_train)
+y_pred_lr = log_reg.predict(X_test)
+
+# Logistic Regression Results
+print("Logistic Regression Results (GloVe):")
+print(classification_report(y_test, y_pred_lr))
+print("Accuracy:", accuracy_score(y_test, y_pred_lr))
+
+# XGBoost model
+xgb_model = XGBClassifier(use_label_encoder=False, eval_metric='logloss')
+xgb_model.fit(X_train, y_train)
+y_pred_xgb = xgb_model.predict(X_test)
+
+# XGBoost Results
+print("\nXGBoost Results (GloVe):")
+print(classification_report(y_test, y_pred_xgb))
+print("Accuracy:", accuracy_score(y_test, y_pred_xgb))
+
+
+
+from transformers import BertTokenizer, BertModel
+import torch
+
+# Load pre-trained BERT model and tokenizer
+tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+bert_model = BertModel.from_pretrained('bert-base-uncased')
+
+# Function to create sentence embeddings using BERT
+def sentence_to_bert_vector(sentence, tokenizer, model):
+    tokens = tokenizer(sentence, return_tensors="pt", truncation=True, padding=True, max_length=512)
+    with torch.no_grad():
+        outputs = model(**tokens)
+        cls_embedding = outputs.last_hidden_state[:, 0, :]  # Take the [CLS] token's embedding
+    return cls_embedding.squeeze().numpy()
+
+# Generate BERT sentence embeddings for the dataset
+data['sentence_vector_bert'] = data['cleaned_text'].apply(
+    lambda x: sentence_to_bert_vector(x, tokenizer, bert_model)
+)
+X_bert = np.vstack(data['sentence_vector_bert'].values)
+
+# Split the data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(X_bert, y, test_size=0.2, random_state=42, stratify=y)
+
+# Logistic Regression model
+log_reg = LogisticRegression(max_iter=1000)
+log_reg.fit(X_train, y_train)
+y_pred_lr = log_reg.predict(X_test)
+
+# Logistic Regression Results
+print("Logistic Regression Results (BERT):")
+print(classification_report(y_test, y_pred_lr))
+print("Accuracy:", accuracy_score(y_test, y_pred_lr))
+
+# XGBoost model
+xgb_model = XGBClassifier(use_label_encoder=False, eval_metric='logloss')
+xgb_model.fit(X_train, y_train)
+y_pred_xgb = xgb_model.predict(X_test)
+
+# XGBoost Results
+print("\nXGBoost Results (BERT):")
+print(classification_report(y_test, y_pred_xgb))
+print("Accuracy:", accuracy_score(y_test, y_pred_xgb))
+
+
+# Using BERT  embeddings on Random Forest
+
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report, accuracy_score
+from transformers import BertTokenizer, BertModel
+import torch
+
+# Load pre-trained BERT model and tokenizer
+tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+bert_model = BertModel.from_pretrained('bert-base-uncased')
+
+# Function to create sentence embeddings using BERT
+def sentence_to_bert_vector(sentence, tokenizer, model):
+    tokens = tokenizer(sentence, return_tensors="pt", truncation=True, padding=True, max_length=512)
+    with torch.no_grad():
+        outputs = model(**tokens)
+        cls_embedding = outputs.last_hidden_state[:, 0, :]  # Take the [CLS] token's embedding
+    return cls_embedding.squeeze().numpy()
+
+# Generate BERT sentence embeddings for the dataset
+data['sentence_vector_bert'] = data['cleaned_text'].apply(
+    lambda x: sentence_to_bert_vector(x, tokenizer, bert_model)
+)
+X_bert = np.vstack(data['sentence_vector_bert'].values)
+
+# Split the data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(X_bert, y, test_size=0.2, random_state=42, stratify=y)
+
+# Random Forest model
+rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
+rf_model.fit(X_train, y_train)
+y_pred_rf = rf_model.predict(X_test)
+
+# Random Forest Results
+print("Random Forest Results (BERT):")
+print(classification_report(y_test, y_pred_rf))
+print("Accuracy:", accuracy_score(y_test, y_pred_rf))
+
+
+
+print(data['label'].value_counts())
+
+
+
+# Extract minority class samples (class 0)
+minority_class_samples = data[data['label'] == 0]['cleaned_text']
+
+# Display the first few minority class samples
+print(minority_class_samples.head())
+
+
+
+# get_ipython().system('pip3 install tensorflow')
+
+
+
+import os
+data.info()
+
+data_export_clean = data[['metaphorID', 'label', 'text', 'cleaned_text']]
+data_export_clean
+
+# Save the DataFrame to a CSV file
+file_path = "/Users/prantarborah/Downloads/Metaphor Detection/preprocessed_data.csv"  
+data_export_clean.to_csv(file_path, index=False)
+
+print(f"DataFrame saved successfully to {file_path}")
+
+
+
+
+data_export_meta=data[['metaphorID', 'label', 'text', 'cleaned_text', 'sentence_vector_bert']]
+# Save the DataFrame to a CSV file
+file_path = "/Users/prantarborah/Downloads/Metaphor Detection/data_meta_with_BERT_emb.csv"  
+data_export_meta.to_csv(file_path, index=False)
+
+print(f"DataFrame saved successfully to {file_path}")
+
+print(data_export_meta)
+
+'''
+
+'''
+import tensorflow as tf
+from transformers import RobertaTokenizer, TFRobertaForSequenceClassification
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report
+import pandas as pd
+import numpy as np
+
+data= pd.read_csv('train-1.csv')
+data.head()
+
+data['label']=data['label'].astype(int)
+data.head()
+
+import re
+import spacy
+nlp = spacy.load('en_core_web_sm')
+
+# Function for text preprocessing and lemmatization
+def preprocess_and_lemmatize(text):
+    text = text.lower()
+    text = re.sub(r'\?+', '?', text)
+    text = re.sub(r'\!+', '!', text)
+    text = re.sub(r'\/+', '', text)
+    text = re.sub(r'`', '', text)
+    text = re.sub(r'-lrb-', '-', text)
+    text = re.sub(r'-rrb-', '-', text)
+    text = re.sub(r'\-+', '-', text)
+    # text = re.sub(r"\b(i['`’]ve|i['`’]m|i['`’]ll)\b", lambda m: m.group(0).replace("'", " "), text)
+    text = re.sub(
+    r"\b(i['’]ve|i['’]m|i['’]ll)\b",
+    lambda m: {
+        "i've": "I have",
+        "i’m": "I am",
+        "i'm": "I am",
+        "i’ll": "I will",
+        "i'll": "I will"
+    }[m.group(0).lower()],
+    text,
+    flags=re.IGNORECASE
+)
+    text = re.sub(r" - ", " . ", text)
+
+    doc = nlp(text)
+    lemmatized_tokens = [token.lemma_ for token in doc]
+    lemmatized_text = ' '.join(lemmatized_tokens)
+    lemmatized_text = re.sub(r"'s\b", "s", lemmatized_text)
+    return lemmatized_text
+
+data['lemmatized_text'] = data['text'].apply(preprocess_and_lemmatize)
+data.head()
+
+"""# Visualizing WordClouds according to Metaphor IDs (on RAW data)"""
+
+# Lets plot a word cloud of all the text according to metaphorID
+
+# Import necessary libraries
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+
+# Group the data by metaphorID
+grouped_data = data.groupby('metaphorID')['text'].apply(lambda x: ' '.join(x))
+
+# Loop through each metaphorID and generate a word cloud
+for metaphor_id, text in grouped_data.items():
+    # Create a WordCloud object
+    wordcloud = WordCloud(width=800, height=400, background_color='white').generate(text)
+
+    # Display the generated image:
+    plt.figure(figsize=(10, 5))
+    plt.imshow(wordcloud, interpolation='bilinear')
+    plt.axis("off")
+    plt.title(f"Word Cloud for Metaphor ID: {metaphor_id}")
+    plt.show()
+
+metaphor_keywords = {
+    0: 'road',
+    1: 'candle',
+    2: 'light',
+    3: 'spice',
+    4: 'ride',
+    5: 'train',
+    6: 'boat'
+}
+
+# Function to extract metaphor-related sentences
+def extract_metaphor_sentences(df):
+    imp_text = []
+
+    for _, row in df.iterrows():
+        metaphor_keyword = metaphor_keywords.get(row['metaphorID'], '')
+        selected_sentence = ""
+
+        for sentence in row['lemmatized_text'].split('.'):
+            if metaphor_keyword in sentence:
+                # Break condition: prioritize sentences without specific punctuation
+                if not any(punct in sentence for punct in [' - ', ' , ', ' ; ', ' ? ', ' ! ']):
+                    selected_sentence = sentence
+                    break
+
+                # Secondary prioritization based on punctuation
+                for punct in [' , ', ' ; ', ' ? ', ' ! ', ' - ']:
+                    if punct in sentence:
+                        for sub_sentence in sentence.split(punct):
+                            if metaphor_keyword in sub_sentence:
+                                selected_sentence = sub_sentence
+                                break
+                        if selected_sentence:
+                            break
+
+        if selected_sentence:
+            imp_text.append(selected_sentence)
+
+    return imp_text
+
+def final_preprocess_data(df):
+
+    # Preprocess and lemmatize text
+    df['lemmatized_text'] = df['text'].apply(preprocess_and_lemmatize)
+
+    # Extract metaphor-related sentences
+    imp_text = extract_metaphor_sentences(df)
+
+    # Create cleaned DataFrame with important metaphor-related sentences
+    cleaned_df = pd.DataFrame({'text': imp_text})
+    cleaned_df[["metaphorID", "label"]] = df.iloc[:, :2]
+    print(cleaned_df.head())
+    # Map labels to target binary values
+    cleaned_df["target"] = cleaned_df["label"].map({True: 1, False: 0})
+    cleaned_df = cleaned_df.drop("label", axis=1)
+
+    # Map metaphorID to metaphor keywords
+    cleaned_df["metaphor"] = cleaned_df["metaphorID"].map(metaphor_keywords)
+    cleaned_df = cleaned_df.drop("metaphorID", axis=1)
+
+    return cleaned_df
+
+cleaned_df = final_preprocess_data(data)
+
+cleaned_df.head()
+
+"""# Visualizing WordClouds according to Metaphor IDs (on CLEAN data)"""
+
+# Group the data by metaphorID
+grouped_data_2 = cleaned_df.groupby('metaphor')['text'].apply(lambda x: ' '.join(x))
+
+# Loop through each metaphorID and generate a word cloud
+for metaphor, text in grouped_data_2.items():
+    # Create a WordCloud object
+    wordcloud = WordCloud(width=800, height=400, background_color='white').generate(text)
+
+    # Display the generated image:
+    plt.figure(figsize=(10, 5))
+    plt.imshow(wordcloud, interpolation='bilinear')
+    plt.axis("off")
+    plt.title(f"Word Cloud for Metaphor ID(post cleaning):  {metaphor}")
+    plt.show()
+
+X, y = cleaned_df.drop("target", axis = 1), data["label"]
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=1, stratify=y)
+
+X_train.reset_index(drop=True, inplace=True)
+X_test.reset_index(drop=True, inplace=True)
+y_train.reset_index(drop=True, inplace=True)
+y_test.reset_index(drop=True, inplace=True)
+
+X_train
+
+from tensorflow.keras.preprocessing.text import Tokenizer
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from keras.layers import LSTM, Dense, Masking, SimpleRNN, StackedRNNCells, GRU
+from tensorflow.keras.optimizers import Adam
+
+vocab_size = 3500
+embedding_dim = 16
+max_length = 300 # almost all the texts are within 300 words
+trunc_type='post'
+padding_type='post'
+oov_tok = "<OOV>"
+
+tokenizer = Tokenizer(num_words=vocab_size, oov_token=oov_tok)
+tokenizer.fit_on_texts(X_train['text'])
+
+word_index = tokenizer.word_index
+
+word_index
+
+training_seq = tokenizer.texts_to_sequences(X_train['text'])
+training_padded = pad_sequences(training_seq, maxlen=max_length, padding=padding_type, truncating=trunc_type)
+
+testing_seq = tokenizer.texts_to_sequences(X_test['text'])
+testing_padded = pad_sequences(testing_seq, maxlen=max_length, padding=padding_type, truncating=trunc_type)
+
+testing_padded
+
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+from tensorflow.keras.layers import Embedding, Bidirectional, LSTM, Dense, Masking, Dropout
+from tensorflow.keras.regularizers import l2
+from tensorflow.keras.optimizers import Adam
+import numpy as np
+from sklearn.model_selection import train_test_split
+
+# Define the model with additional regularization and dropout layers
+model_LSTM = tf.keras.Sequential([
+    Embedding(input_dim=vocab_size, output_dim=embedding_dim, input_length=300),
+    Bidirectional(LSTM(128, return_sequences=True, kernel_regularizer=l2(0.01))),
+    Dropout(0.3),  # Dropout to reduce overfitting
+    Bidirectional(LSTM(64, kernel_regularizer=l2(0.01))),
+    Dropout(0.3),
+    Dense(128, activation='relu', kernel_regularizer=l2(0.01)),
+    Dropout(0.3),
+    Dense(1, activation='sigmoid')  # Output layer for binary classification
+])
+
+# Compile the model with learning rate
+optimizer = Adam(learning_rate=0.0005)
+
+model_LSTM.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
+
+# Define early stopping and model checkpoint callbacks to monitor 'val_loss'
+early_stopping = EarlyStopping(monitor='val_loss', patience=50, restore_best_weights=True)
+model_checkpoint = ModelCheckpoint('best_model.keras', monitor='val_loss', save_best_only=True)
+
+# Convert data to numpy arrays
+training_padded = np.array(training_padded)
+training_labels = np.array(y_train)
+testing_padded = np.array(testing_padded)
+testing_labels = np.array(y_test)
+
+# Split training data to create a separate validation set
+training_padded, validation_padded, training_labels, validation_labels = train_test_split(
+    training_padded, training_labels, test_size=0.2, random_state=42
+)
+
+# Fit the model using the training and validation sets
+num_epochs = 150
+history = model_LSTM.fit(
+    training_padded, training_labels,
+    epochs=num_epochs,
+    validation_data=(validation_padded, validation_labels),
+    verbose=1,
+    callbacks=[early_stopping, model_checkpoint]
+)
+
+import matplotlib.pyplot as plt
+
+# Assuming 'history' is the history object returned by model.fit()
+
+# Create a figure with subplots
+plt.figure(figsize=(10, 5))
+
+# Plot training and validation accuracy
+plt.subplot(1, 2, 1)
+plt.plot(history.history['accuracy'], label='Train Accuracy', linestyle='-', marker='o')
+plt.plot(history.history['val_accuracy'], label='Validation Accuracy', linestyle='--', marker='x')
+plt.title('Train and Validation Accuracy over Epochs')
+plt.xlabel('Epoch')
+plt.ylabel('Accuracy')
+plt.grid(True)
+plt.legend()
+
+# Plot training and validation loss
+plt.subplot(1, 2, 2)
+plt.plot(history.history['loss'], label='Train Loss', linestyle='-', marker='o')
+plt.plot(history.history['val_loss'], label='Validation Loss', linestyle='--', marker='x')
+plt.title('Train and Validation Loss over Epochs')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.grid(True)
+plt.legend()
+
+# Adjust layout for better spacing
+plt.tight_layout()
+plt.show()
+
+y_pred=np.round(model_LSTM.predict(testing_padded))
+y_pred=y_pred.flatten()
+y_pred
+
+from sklearn.metrics import classification_report
+# Generate classification report
+report = classification_report( testing_labels,y_pred)
+
+# Print the classification report
+print("Classification Report:\n", report)
+'''
+
+
 import pandas as pd
 import re
 import spacy
@@ -24,6 +659,10 @@ from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_sc
 nltk.download('stopwords')
 nltk.download('wordnet')
 
+import warnings
+
+# Ignore warnings
+warnings.filterwarnings("ignore")
 
 def train(path):
 
